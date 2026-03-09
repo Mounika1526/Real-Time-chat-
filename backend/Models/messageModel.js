@@ -30,6 +30,12 @@ const messageModel = mongoose.Schema(
         },
       },
     ],
+    mentions: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
   },
   {
     timestamps: true,

@@ -33,6 +33,14 @@ const chatModel = mongoose.Schema(
         ref: "User",
       },
     ],
+    description: { type: String, default: "" },
+    groupAvatar: { type: String, default: null },
+    pinnedMessages: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Message",
+      },
+    ],
   },
   {
     timestamps: true,

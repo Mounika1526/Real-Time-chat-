@@ -2,7 +2,31 @@ const asyncHandler = require("express-async-handler");
 const ChatModel = require("../Models/chatModel");
 const UserModel = require("../Models/UserModel");
 const MessageModel = require("../Models/messageModel");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
 
+const groupAvatarStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const dir = path.join(__dirname, "../uploads/avatars");
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, req.params.chatId + "-" + uniqueSuffix + path.extname(file.originalname));
+  },
+});
+const groupAvatarUpload = multer({
+  storage: groupAvatarStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith("image/")) {
+      return cb(new Error("Only image files are allowed"), false);
+    }
+    cb(null, true);
+  },
+});
 const accessChat = asyncHandler(async (req, res) => {
   const { userId } = req.body;
 
@@ -206,9 +230,10 @@ const getChatDetails = asyncHandler(async (req, res) => {
   try {
     const chat = await ChatModel.findById(req.params.chatId)
       .populate("users", "name avatar publicKey")
-      .populate("groupAdmin", "publicKey")
+      .populate("groupAdmin", "publicKey _id")
       .populate("pendingMembers", "name avatar publicKey")
-      .populate("latestMessage");
+      .populate("latestMessage")
+      .populate({ path: "pinnedMessages", populate: { path: "sender", select: "name" } });
 
     if (!chat) {
       return res.status(404).json({ message: "Chat not found" });
@@ -252,6 +277,157 @@ const declineJoinRequest = asyncHandler(async (req, res) => {
 });
 
 
+const removeMember = asyncHandler(async (req, res) => {
+  const { chatId, userId } = req.body;
+  const adminId = req.user._id;
+
+  const chat = await ChatModel.findById(chatId);
+  if (!chat) {
+    res.status(404);
+    throw new Error("Chat not found");
+  }
+  if (chat.groupAdmin.toString() !== adminId.toString()) {
+    res.status(403);
+    throw new Error("Only the group admin can remove members.");
+  }
+  if (userId === adminId.toString()) {
+    res.status(400);
+    throw new Error("Admin cannot remove themselves. Use group exit.");
+  }
+
+  const updated = await ChatModel.findByIdAndUpdate(
+    chatId,
+    { $pull: { users: userId, groupKeys: { userId } } },
+    { new: true }
+  )
+    .populate("users", "-password")
+    .populate("groupAdmin", "-password");
+
+  const io = req.app.get("io");
+  if (io) {
+    io.to(userId).emit("removed:fromGroup", { chatId });
+  }
+
+  res.status(200).json(updated);
+});
+
+const promoteAdmin = asyncHandler(async (req, res) => {
+  const { chatId, userId } = req.body;
+  const adminId = req.user._id;
+
+  const chat = await ChatModel.findById(chatId);
+  if (!chat) {
+    res.status(404);
+    throw new Error("Chat not found");
+  }
+  if (chat.groupAdmin.toString() !== adminId.toString()) {
+    res.status(403);
+    throw new Error("Only the current admin can promote members.");
+  }
+
+  const updated = await ChatModel.findByIdAndUpdate(
+    chatId,
+    { groupAdmin: userId },
+    { new: true }
+  )
+    .populate("users", "-password")
+    .populate("groupAdmin", "-password");
+
+  const io = req.app.get("io");
+  if (io) {
+    io.to(chatId).emit("admin:changed", { chatId, newAdminId: userId });
+  }
+
+  res.status(200).json(updated);
+});
+
+const updateGroupInfo = asyncHandler(async (req, res) => {
+  const { chatId } = req.params;
+  const adminId = req.user._id;
+
+  const chat = await ChatModel.findById(chatId);
+  if (!chat) {
+    res.status(404);
+    throw new Error("Chat not found");
+  }
+  if (chat.groupAdmin.toString() !== adminId.toString()) {
+    res.status(403);
+    throw new Error("Only the group admin can update group info.");
+  }
+
+  const update = {};
+  if (req.body.chatName) update.chatName = req.body.chatName;
+  if (req.body.description !== undefined) update.description = req.body.description;
+  if (req.file) update.groupAvatar = "uploads/avatars/" + req.file.filename;
+
+  const updated = await ChatModel.findByIdAndUpdate(chatId, update, { new: true })
+    .populate("users", "-password")
+    .populate("groupAdmin", "-password");
+
+  const io = req.app.get("io");
+  if (io) {
+    io.to(chatId).emit("group:updated", updated);
+  }
+
+  res.status(200).json(updated);
+});
+
+const pinMessage = asyncHandler(async (req, res) => {
+  const { chatId, messageId } = req.params;
+  const adminId = req.user._id;
+
+  const chat = await ChatModel.findById(chatId);
+  if (!chat) {
+    res.status(404);
+    throw new Error("Chat not found");
+  }
+  if (chat.groupAdmin.toString() !== adminId.toString()) {
+    res.status(403);
+    throw new Error("Only the group admin can pin messages.");
+  }
+
+  const updated = await ChatModel.findByIdAndUpdate(
+    chatId,
+    { $addToSet: { pinnedMessages: messageId } },
+    { new: true }
+  ).populate("pinnedMessages");
+
+  const io = req.app.get("io");
+  if (io) {
+    io.to(chatId).emit("message:pinned", { chatId, messageId });
+  }
+
+  res.status(200).json(updated);
+});
+
+const unpinMessage = asyncHandler(async (req, res) => {
+  const { chatId, messageId } = req.params;
+  const adminId = req.user._id;
+
+  const chat = await ChatModel.findById(chatId);
+  if (!chat) {
+    res.status(404);
+    throw new Error("Chat not found");
+  }
+  if (chat.groupAdmin.toString() !== adminId.toString()) {
+    res.status(403);
+    throw new Error("Only the group admin can unpin messages.");
+  }
+
+  const updated = await ChatModel.findByIdAndUpdate(
+    chatId,
+    { $pull: { pinnedMessages: messageId } },
+    { new: true }
+  ).populate("pinnedMessages");
+
+  const io = req.app.get("io");
+  if (io) {
+    io.to(chatId).emit("message:unpinned", { chatId, messageId });
+  }
+
+  res.status(200).json(updated);
+});
+
 module.exports = {
   accessChat,
   fetchChats,
@@ -263,4 +439,10 @@ module.exports = {
   getChatDetails,
   getAdminPending,
   declineJoinRequest,
+  removeMember,
+  promoteAdmin,
+  updateGroupInfo,
+  pinMessage,
+  unpinMessage,
+  groupAvatarUpload,
 };

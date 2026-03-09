@@ -1,10 +1,11 @@
 import React, { useEffect } from "react";
 import ChatSlideBar from "./ChatSlideBar";
-import { Outlet } from "react-router-dom";
+import { Outlet, useNavigate } from "react-router-dom";
 import { useDispatch, useSelector } from "react-redux";
 import { useState } from "react";
 import { createContext } from "react";
 import io from "socket.io-client";
+import axios from "axios";
 
 export const refreshContext = createContext();
 export const refreshChatSlideBarContext = createContext();
@@ -14,6 +15,7 @@ export const MobileContext = createContext();
 function Main() {
   const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
   const dispatch = useDispatch();
+  const navigate = useNavigate();
   const lightTheme = useSelector((state) => state.themeKey);
   const [refresh, setRefresh] = useState(true);
   const [recievedNewMessage, setRecievedNewMessage] = useState(null);
@@ -23,6 +25,22 @@ function Main() {
   const userData = JSON.parse(userDataString);
   const [isMobile, setIsMobile] = useState(false);
   const [showChatInMobile, setShowChatInMobile] = useState(false);
+
+  // Auto logout on any 401 Unauthorized response
+  useEffect(() => {
+    const interceptor = axios.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        if (error.response?.status === 401) {
+          localStorage.removeItem("userData");
+          localStorage.removeItem("privateKey");
+          navigate("/");
+        }
+        return Promise.reject(error);
+      }
+    );
+    return () => axios.interceptors.response.eject(interceptor);
+  }, [navigate]);
   useEffect(() => {
     const checkMobile = () => {
       setIsMobile(window.innerWidth <= 640);

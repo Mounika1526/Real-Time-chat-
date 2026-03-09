@@ -1,9 +1,12 @@
 import React, { useContext, useRef, useState, useEffect } from "react";
 import DeleteIcon from "@mui/icons-material/Delete";
 import SendIcon from "@mui/icons-material/Send";
-import { IconButton, Skeleton, CircularProgress } from "@mui/material";
+import { IconButton, Skeleton, CircularProgress, Tooltip } from "@mui/material";
 import Badge from "@mui/material/Badge";
 import GroupAddIcon from "@mui/icons-material/GroupAdd";
+import PeopleIcon from "@mui/icons-material/People";
+import EditIcon from "@mui/icons-material/Edit";
+import PushPinIcon from "@mui/icons-material/PushPin";
 import { useNavigate } from "react-router-dom";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import {
@@ -16,6 +19,8 @@ import {
 } from "@mui/material";
 import MessageFromOther from "./MessageFromOther";
 import MessageByMe from "./MessageByMe";
+import GroupMembersPanel from "./GroupMembersPanel";
+import GroupInfoEdit from "./GroupInfoEdit";
 import { useSelector } from "react-redux";
 import { useParams } from "react-router-dom";
 import axios from "axios";
@@ -62,6 +67,8 @@ function ChatWindow() {
 
   const [loaded, setLoaded] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
+  const [typingUserName, setTypingUserName] = useState("");
+  const [groupTypingName, setGroupTypingName] = useState("");
   const [firstUnreadIndex, setFirstUnreadIndex] = useState(-1);
   const [hasMarkedAsRead, setHasMarkedAsRead] = useState(false);
   const messagesEndRef = useRef(null);
@@ -69,6 +76,7 @@ function ChatWindow() {
   const [chatDetails, setChatDetails] = useState(null);
   const [canDelete, setCanDelete] = useState(false);
   const [typingTimeout, setTypingTimeout] = useState(null);
+  const [isOffline, setIsOffline] = useState(!navigator.onLine);
 
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -85,6 +93,30 @@ function ChatWindow() {
   );
   const activeChatIdRef = useRef(null);
   useEffect(() => { activeChatIdRef.current = chat_id; }, [chat_id]);
+
+  // Group feature state
+  const [showMembersPanel, setShowMembersPanel] = useState(false);
+  const [showGroupEdit, setShowGroupEdit] = useState(false);
+  const [pinnedMessages, setPinnedMessages] = useState([]);
+  const [pinnedBannerOpen, setPinnedBannerOpen] = useState(true);
+
+  // Mention autocomplete state
+  const [mentionSuggestions, setMentionSuggestions] = useState([]);
+  const [showMentionDropdown, setShowMentionDropdown] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const inputRef = useRef(null);
+
+  // Offline detection
+  useEffect(() => {
+    const goOnline = () => setIsOffline(false);
+    const goOffline = () => setIsOffline(true);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+  }, []);
 
   const fetchMessages = (pageNum) => {
     if (loadingMore || pageNum > totalPages) return;
@@ -138,7 +170,6 @@ function ChatWindow() {
         !loadingMore &&
         page < totalPages
       ) {
-        console.log("Reached top, loading more messages...");
         fetchMessages(page + 1);
       }
     }
@@ -156,19 +187,64 @@ function ChatWindow() {
     };
   }, [loadingMore, page, totalPages]);
 
+  // Mention autocomplete logic
+  const handleMentionInput = (value) => {
+    const atIndex = value.lastIndexOf("@");
+    if (atIndex !== -1 && isGroupChat && chatDetails?.users) {
+      const query = value.slice(atIndex + 1);
+      if (!query.includes(" ")) {
+        setMentionQuery(query);
+        const filtered = chatDetails.users.filter(
+          (u) =>
+            u._id !== userData.data._id &&
+            u.name.toLowerCase().startsWith(query.toLowerCase())
+        );
+        setMentionSuggestions(filtered);
+        setShowMentionDropdown(filtered.length > 0);
+        return;
+      }
+    }
+    setShowMentionDropdown(false);
+    setMentionSuggestions([]);
+    setMentionQuery("");
+  };
+
+  const handleSelectMention = (user) => {
+    const atIndex = messageContent.lastIndexOf("@");
+    const newContent = messageContent.slice(0, atIndex) + "@" + user.name + " ";
+    setMessageContent(newContent);
+    setShowMentionDropdown(false);
+    setMentionSuggestions([]);
+    setMentionQuery("");
+    inputRef.current?.focus();
+  };
+
+  const parseMentions = (text) => {
+    if (!chatDetails?.users) return [];
+    const mentioned = [];
+    chatDetails.users.forEach((u) => {
+      if (text.includes("@" + u.name)) {
+        mentioned.push(u._id);
+      }
+    });
+    return mentioned;
+  };
+
   const handleTyping = (e) => {
-    setMessageContent(e.target.value);
+    const value = e.target.value;
+    setMessageContent(value);
+    handleMentionInput(value);
 
     if (!socket) return;
 
     if (!isTyping) {
-      socket.emit("typing", chat_id);
+      socket.emit("typing", { room: chat_id, name: userData.data.name });
     }
 
     if (typingTimeout) clearTimeout(typingTimeout);
 
     const timer = setTimeout(() => {
-      socket.emit("stop typing", chat_id);
+      socket.emit("stop typing", { room: chat_id, name: userData.data.name });
     }, 2000);
     setTypingTimeout(timer);
   };
@@ -176,6 +252,7 @@ function ChatWindow() {
   const sendMessage = () => {
     if (!messageContent.trim() || !socket) return;
     let finalMessageContent;
+    const mentionIds = parseMentions(messageContent);
 
     if (isGroupChat) {
       if (!groupKey) {
@@ -210,7 +287,7 @@ function ChatWindow() {
       });
     }
 
-    socket.emit("stop typing", chat_id);
+    socket.emit("stop typing", { room: chat_id, name: userData.data.name });
     const tempId = `temp-${Date.now()}-${Math.random()}`;
     const optimisticMessage = {
       _id: tempId,
@@ -248,6 +325,7 @@ function ChatWindow() {
         {
           content: finalMessageContent,
           chatId: chat_id,
+          mentions: mentionIds,
         },
         config
       )
@@ -260,12 +338,15 @@ function ChatWindow() {
       })
       .catch((error) => {
         setAllMessages((prev) =>
-          prev.filter((msg) => msg._id !== optimisticMessage._id)
+          prev.map((msg) =>
+            msg._id === tempId ? { ...msg, isFailed: true } : msg
+          )
         );
         setMessageContent(currentMessage);
         console.error("Failed to send message:", error);
       });
   };
+
   useEffect(() => {
     if (recievedNewMessage != null) {
       const newMessage = recievedNewMessage;
@@ -291,6 +372,7 @@ function ChatWindow() {
       d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     );
   };
+
   useEffect(() => {
     setAllMessages([]);
     setPage(1);
@@ -300,21 +382,64 @@ function ChatWindow() {
     if (socket) {
       socket.emit("join chat", chat_id);
 
-      const typingHandler = (room) => {
-        console.log("Received typing event for room:", room, chat_id);
+      const typingHandler = (data) => {
+        const room = typeof data === "object" && data !== null ? data.room : data;
+        const name = typeof data === "object" && data !== null ? data.name : "";
         if (room === chat_id) {
           setIsTyping(true);
+          if (name) setGroupTypingName(name);
         }
       };
 
-      const stopTypingHandler = (room) => {
+      const stopTypingHandler = (data) => {
+        const room = typeof data === "object" && data !== null ? data.room : data;
         if (room === chat_id) {
           setIsTyping(false);
+          setGroupTypingName("");
+        }
+      };
+
+      const messagePinnedHandler = ({ chatId, messageId }) => {
+        if (chatId === chat_id) {
+          const pinned = allMessages.find((m) => m._id === messageId);
+          if (pinned) {
+            setPinnedMessages((prev) => {
+              if (prev.some((p) => p._id === messageId)) return prev;
+              return [...prev, pinned];
+            });
+            setPinnedBannerOpen(true);
+          }
+        }
+      };
+
+      const messageUnpinnedHandler = ({ chatId, messageId }) => {
+        if (chatId === chat_id) {
+          setPinnedMessages((prev) => prev.filter((p) => p._id !== messageId));
+        }
+      };
+
+      const removedFromGroupHandler = ({ chatId }) => {
+        if (chatId === chat_id) {
+          navigate("/app/welcome");
+        }
+      };
+
+      const adminChangedHandler = ({ chatId, newAdminId }) => {
+        if (chatId === chat_id) {
+          setChatDetails((prev) =>
+            prev ? { ...prev, groupAdmin: { ...prev.groupAdmin, _id: newAdminId } } : prev
+          );
+          setCanDelete(newAdminId === userData.data._id);
         }
       };
 
       socket.on("typing", typingHandler);
       socket.on("stop typing", stopTypingHandler);
+      socket.on("message:pinned", messagePinnedHandler);
+      socket.on("message:unpinned", messageUnpinnedHandler);
+      socket.on("removed:fromGroup", removedFromGroupHandler);
+      socket.on("admin:changed", adminChangedHandler);
+
       const presenceHandler = ({ userId, online, lastSeen }) => {
         setPresenceByUserId((prev) => ({
           ...prev,
@@ -323,13 +448,17 @@ function ChatWindow() {
       };
       socket.on("presence:update", presenceHandler);
       return () => {
-        console.log("Cleaning up socket listeners...");
         socket.off("typing", typingHandler);
         socket.off("stop typing", stopTypingHandler);
+        socket.off("message:pinned", messagePinnedHandler);
+        socket.off("message:unpinned", messageUnpinnedHandler);
+        socket.off("removed:fromGroup", removedFromGroupHandler);
+        socket.off("admin:changed", adminChangedHandler);
         socket.off("presence:update", presenceHandler);
       };
     }
   }, [refresh, chat_id, userData.data.token, socket]);
+
   useEffect(() => {
     if (allMessages.length > 0 && userData.data._id) {
       const firstUnread = allMessages.findIndex((message) => {
@@ -344,6 +473,7 @@ function ChatWindow() {
       }
     }
   }, [allMessages, userData.data._id, chat_id]);
+
   useEffect(() => {
     const container = chatContainerRef.current;
     const target = firstUnreadRef.current;
@@ -363,6 +493,7 @@ function ChatWindow() {
       container.scrollTo({ top: 0, behavior: "smooth" });
     }
   }, [firstUnreadIndex]);
+
   useEffect(() => {
     if (
       chat_id &&
@@ -404,12 +535,19 @@ function ChatWindow() {
           config
         );
         setChatDetails(details);
+        const adminId = details.groupAdmin?._id || details.groupAdmin;
         setCanDelete(
           details.isGroupChat
-            ? details.groupAdmin._id === userData.data._id
+            ? adminId === userData.data._id
             : true
         );
         setIsGroupChat(details.isGroupChat);
+
+        if (details.pinnedMessages?.length) {
+          setPinnedMessages(details.pinnedMessages);
+          setPinnedBannerOpen(true);
+        }
+
         if (details.isGroupChat) {
           const myKeyData = (details.groupKeys || []).find((k) => {
             const id = k?.userId && k.userId._id ? k.userId._id : k.userId;
@@ -433,7 +571,7 @@ function ChatWindow() {
           let adminPublicKeyB64 = details.groupAdmin?.publicKey;
           if (!adminPublicKeyB64) {
             const { data } = await axios.get(
-              `${BACKEND_URL}/user/publicKey/${details.groupAdmin._id}`,
+              `${BACKEND_URL}/user/publicKey/${details.groupAdmin._id || details.groupAdmin}`,
               config
             );
             adminPublicKeyB64 = data?.publicKey;
@@ -460,6 +598,9 @@ function ChatWindow() {
           );
           if (otherUser?.publicKey) {
             setRecipientPublicKey(decodeBase64(otherUser.publicKey));
+          }
+          if (otherUser?.name) {
+            setTypingUserName(otherUser.name);
           }
         }
         const ids = details.users
@@ -489,6 +630,7 @@ function ChatWindow() {
       fetchChatDetails();
     }
   }, [chat_id, userData.data.token]);
+
   useEffect(() => {
     if (socket) {
       socket.on("conversationDeleted", ({ chatId, deletedBy }) => {
@@ -518,6 +660,7 @@ function ChatWindow() {
       })
     );
   };
+
   const handleSendMessage = () => {
     sendMessage();
     if (!hasMarkedAsRead) {
@@ -546,9 +689,11 @@ function ChatWindow() {
       }
     }
   };
+
   const handleBackClick = () => {
     setShowChatInMobile(false);
   };
+
   const handleDeleteConversation = async () => {
     try {
       const config = {
@@ -564,11 +709,54 @@ function ChatWindow() {
       setAllMessages([]);
       setRefreshChatSlideBar((prevState) => !prevState);
       setShowDeleteDialog(false);
-
     } catch (error) {
       console.error("Error deleting messages:", error);
     }
   };
+
+  const handlePinMessage = async (messageId) => {
+    try {
+      const config = {
+        headers: { Authorization: `Bearer ${userData.data.token}` },
+      };
+      await axios.post(
+        `${BACKEND_URL}/chat/${chat_id}/pin/${messageId}`,
+        {},
+        config
+      );
+    } catch (err) {
+      console.error("Pin message failed:", err);
+    }
+  };
+
+  const handleUnpinMessage = async (messageId) => {
+    try {
+      const config = {
+        headers: { Authorization: `Bearer ${userData.data.token}` },
+      };
+      await axios.delete(
+        `${BACKEND_URL}/chat/${chat_id}/pin/${messageId}`,
+        config
+      );
+    } catch (err) {
+      console.error("Unpin message failed:", err);
+    }
+  };
+
+  const isAdmin =
+    chatDetails?.groupAdmin?._id === userData.data._id ||
+    chatDetails?.groupAdmin === userData.data._id;
+
+  const latestPin = pinnedMessages.length > 0 ? pinnedMessages[pinnedMessages.length - 1] : null;
+
+  const decryptPinnedContent = (msg) => {
+    if (!msg) return "";
+    if (isGroupChat && groupKey) {
+      return decryptGroupMessage({ messageContent: msg.content, groupKey });
+    }
+    return msg.content || "";
+  };
+
   if (!loaded) {
     return (
       <div
@@ -616,7 +804,11 @@ function ChatWindow() {
           {chatDetails &&
             (chatDetails.isGroupChat ? (
               <img
-                src={`${BACKEND_URL}/uploads/avatars/group_default.png`}
+                src={
+                  chatDetails.groupAvatar
+                    ? `${BACKEND_URL}/${chatDetails.groupAvatar}`
+                    : `${BACKEND_URL}/uploads/avatars/group_default.png`
+                }
                 alt="Group Avatar"
                 className="profile-avatar"
               />
@@ -643,7 +835,6 @@ function ChatWindow() {
             >
               {chat_user}
             </p>
-            {/* <p className="conversation_item-timeStamp">{timeStamp}</p> */}
             {chatDetails &&
               (chatDetails.isGroupChat ? (
                 <p className="conversation_item-timeStamp">
@@ -653,7 +844,7 @@ function ChatWindow() {
                     );
                     const on = others.reduce(
                       (a, u) =>
-                        a+(presenceByUserId[String(u._id)]?.online ? 1 : 0),
+                        a + (presenceByUserId[String(u._id)]?.online ? 1 : 0),
                       0
                     );
                     return `${on}/${others.length} online`;
@@ -674,6 +865,25 @@ function ChatWindow() {
                 </p>
               ))}
           </div>
+
+          {/* Group Members button */}
+          {isGroupChat && (
+            <Tooltip title="Group Members">
+              <IconButton onClick={() => setShowMembersPanel(true)}>
+                <PeopleIcon className={"icon" + (lightTheme ? "" : " dark")} />
+              </IconButton>
+            </Tooltip>
+          )}
+
+          {/* Group Info Edit button (admin only) */}
+          {isGroupChat && isAdmin && (
+            <Tooltip title="Edit Group Info">
+              <IconButton onClick={() => setShowGroupEdit(true)}>
+                <EditIcon className={"icon" + (lightTheme ? "" : " dark")} />
+              </IconButton>
+            </Tooltip>
+          )}
+
           {isGroupChat && canDelete && (
             <IconButton
               onClick={() => navigate(`/app/admin-requests/${chat_id}`)}
@@ -727,19 +937,62 @@ function ChatWindow() {
             </DialogActions>
           </Dialog>
         </div>
+
+        {/* Pinned message banner */}
+        {isGroupChat && latestPin && pinnedBannerOpen && (
+          <div className={"pinned-banner" + (lightTheme ? "" : " dark")}>
+            <PushPinIcon fontSize="small" className="pin-icon" />
+            <span className="pinned-banner-text">
+              <strong>{latestPin.sender?.name || ""}:</strong>{" "}
+              {decryptPinnedContent(latestPin)}
+            </span>
+            {isAdmin && (
+              <Tooltip title="Unpin">
+                <IconButton
+                  size="small"
+                  onClick={() => handleUnpinMessage(latestPin._id)}
+                  className="pinned-unpin-btn"
+                >
+                  <PushPinIcon fontSize="inherit" style={{ opacity: 0.5 }} />
+                </IconButton>
+              </Tooltip>
+            )}
+            <IconButton
+              size="small"
+              onClick={() => setPinnedBannerOpen(false)}
+              className="pinned-close-btn"
+            >
+              ×
+            </IconButton>
+          </div>
+        )}
+
+        {isOffline && (
+          <div className="offline-banner" role="alert">
+            You are offline — messages will not be delivered
+          </div>
+        )}
+
         <div
           className={"chat_window-msg-container" + (lightTheme ? "" : " dark")}
           ref={chatContainerRef}
         >
           {isTyping && (
-            <div className={"typing-indicator" + (lightTheme ? "" : " dark")}>
-              <Lottie
-                animationData={
-                  lightTheme ? typingIndicator : typingIndicatorDark
-                }
-                loop
-                autoplay
-              />
+            <div className={"typing-indicator-wrap" + (lightTheme ? "" : " dark")}>
+              {(isGroupChat ? groupTypingName : typingUserName) && (
+                <span className="typing-user-name">
+                  {isGroupChat ? groupTypingName : typingUserName} is typing
+                </span>
+              )}
+              <div className={"typing-indicator" + (lightTheme ? "" : " dark")}>
+                <Lottie
+                  animationData={
+                    lightTheme ? typingIndicator : typingIndicatorDark
+                  }
+                  loop
+                  autoplay
+                />
+              </div>
             </div>
           )}
           <div ref={messagesEndRef} />
@@ -765,7 +1018,10 @@ function ChatWindow() {
                 <div
                   key={message._id}
                   ref={isFirstUnread ? firstUnreadRef : null}
-                  className={isFirstUnread ? "unread-anchor" : undefined}
+                  className={
+                    (isFirstUnread ? "unread-anchor " : "") +
+                    (isGroupChat && isAdmin ? "pinnable-message" : "")
+                  }
                 >
                   {isFirstUnread && (
                     <div
@@ -784,7 +1040,29 @@ function ChatWindow() {
                   )}
                   <MessageByMe
                     props={{ ...message, content: decryptedContent }}
+                    onRetry={
+                      message.isFailed
+                        ? () => {
+                            setMessageContent(decryptedContent);
+                            setAllMessages((prev) =>
+                              prev.filter((m) => m._id !== message._id)
+                            );
+                          }
+                        : undefined
+                    }
                   />
+                  {isGroupChat && isAdmin && (
+                    <Tooltip title="Pin message" placement="left">
+                      <IconButton
+                        size="small"
+                        className="pin-msg-btn"
+                        onClick={() => handlePinMessage(message._id)}
+                        aria-label="Pin message"
+                      >
+                        <PushPinIcon fontSize="inherit" />
+                      </IconButton>
+                    </Tooltip>
+                  )}
                 </div>
               );
             } else {
@@ -792,7 +1070,10 @@ function ChatWindow() {
                 <div
                   key={message._id}
                   ref={isFirstUnread ? firstUnreadRef : null}
-                  className={isFirstUnread ? "unread-anchor" : undefined}
+                  className={
+                    (isFirstUnread ? "unread-anchor " : "") +
+                    (isGroupChat && isAdmin ? "pinnable-message" : "")
+                  }
                 >
                   {isFirstUnread && (
                     <div
@@ -812,6 +1093,18 @@ function ChatWindow() {
                   <MessageFromOther
                     props={{ ...message, content: decryptedContent }}
                   />
+                  {isGroupChat && isAdmin && (
+                    <Tooltip title="Pin message" placement="right">
+                      <IconButton
+                        size="small"
+                        className="pin-msg-btn"
+                        onClick={() => handlePinMessage(message._id)}
+                        aria-label="Pin message"
+                      >
+                        <PushPinIcon fontSize="inherit" />
+                      </IconButton>
+                    </Tooltip>
+                  )}
                 </div>
               );
             }
@@ -830,14 +1123,45 @@ function ChatWindow() {
           )}
           <div ref={messagesEndRef} />
         </div>
+
+        {/* Mention autocomplete dropdown */}
+        {showMentionDropdown && (
+          <div className={"mention-dropdown" + (lightTheme ? "" : " dark")}>
+            {mentionSuggestions.map((user) => (
+              <div
+                key={user._id}
+                className={"mention-option" + (lightTheme ? "" : " dark")}
+                onMouseDown={() => handleSelectMention(user)}
+              >
+                {user.avatar ? (
+                  <img
+                    src={`${BACKEND_URL}/${user.avatar}`}
+                    alt={user.name}
+                    className="mention-avatar"
+                  />
+                ) : (
+                  <img
+                    src={`${BACKEND_URL}/uploads/avatars/default.png`}
+                    alt={user.name}
+                    className="mention-avatar"
+                  />
+                )}
+                <span>@{user.name}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className={"chat_window-msg-inp" + (lightTheme ? "" : " dark")}>
           <input
-            placeholder="Type a Message"
+            ref={inputRef}
+            placeholder={isGroupChat ? "Type a Message or @ to mention" : "Type a Message"}
             className={"search-box" + (lightTheme ? "" : " dark")}
             value={messageContent}
             onChange={handleTyping}
             onKeyDown={(event) => {
-              if (event.code === "Enter") sendMessage();
+              if (event.code === "Enter" && !showMentionDropdown) sendMessage();
+              if (event.code === "Escape") setShowMentionDropdown(false);
             }}
           />
           <StyleSuggestions
@@ -856,6 +1180,31 @@ function ChatWindow() {
             <SendIcon />
           </IconButton>
         </div>
+
+        {/* Group Members Panel */}
+        {chatDetails && (
+          <GroupMembersPanel
+            open={showMembersPanel}
+            onClose={() => setShowMembersPanel(false)}
+            chatDetails={chatDetails}
+            currentUser={userData.data}
+            onChatUpdated={(updatedChat) => {
+              setChatDetails(updatedChat);
+            }}
+          />
+        )}
+
+        {/* Group Info Edit Dialog */}
+        {chatDetails && isAdmin && (
+          <GroupInfoEdit
+            open={showGroupEdit}
+            onClose={() => setShowGroupEdit(false)}
+            chatDetails={chatDetails}
+            onChatUpdated={(updatedChat) => {
+              setChatDetails(updatedChat);
+            }}
+          />
+        )}
       </div>
     );
   }

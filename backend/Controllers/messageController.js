@@ -57,17 +57,20 @@ const markMessagesAsRead = asyncHandler(async (req, res) => {
 });
 
 const sendMessage = asyncHandler(async (req, res) => {
-  const { content, chatId } = req.body;
+  const { content, chatId, mentions } = req.body;
   if (!content || !chatId) {
     console.log("Invalid data passed into request");
     return res.sendStatus(400);
   }
+
+  const mentionIds = Array.isArray(mentions) ? mentions : [];
 
   var newMessage = {
     sender: req.user._id,
     content: content,
     chat: chatId,
     readBy: [{ user: req.user.id, readAt: new Date() }],
+    mentions: mentionIds,
   };
   try {
     var message = await MessageModel.create(newMessage);
@@ -78,9 +81,21 @@ const sendMessage = asyncHandler(async (req, res) => {
       path: "chat.users",
       select: "name email",
     });
-    const cm = await ChatModel.findByIdAndUpdate(req.body.chatId, {
+    await ChatModel.findByIdAndUpdate(req.body.chatId, {
       latestMessage: message,
     });
+
+    const io = req.app.get("io");
+    if (io && mentionIds.length > 0) {
+      mentionIds.forEach((userId) => {
+        io.to(userId.toString()).emit("mention:notification", {
+          chatId,
+          messageId: message._id,
+          from: req.user.name,
+        });
+      });
+    }
+
     res.json(message);
   } catch (error) {
     res.status(400);

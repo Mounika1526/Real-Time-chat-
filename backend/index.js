@@ -100,8 +100,14 @@ io.on("connection", (socket) => {
   socket.on("join chat", (room) => {
     socket.join(room);
   });
-  socket.on("typing", (room) => socket.in(room).emit("typing", room));
-  socket.on("stop typing", (room) => socket.in(room).emit("stop typing", room));
+  socket.on("typing", (data) => {
+    const room = typeof data === "object" && data !== null ? data.room : data;
+    socket.in(room).emit("typing", data);
+  });
+  socket.on("stop typing", (data) => {
+    const room = typeof data === "object" && data !== null ? data.room : data;
+    socket.in(room).emit("stop typing", data);
+  });
 
   socket.on("newMessage", (newMessageStatus) => {
     console.log("[socket] got new message:", newMessageStatus);

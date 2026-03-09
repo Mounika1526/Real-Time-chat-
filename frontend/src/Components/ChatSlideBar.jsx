@@ -73,12 +73,30 @@ function ChatSlideBar() {
     severity: "info",
   });
   const [summaryChat, setSummaryChat] = useState(null);
+  const [showUnreadOnly, setShowUnreadOnly] = useState(false);
+  const [sessionWarning, setSessionWarning] = useState(false);
 
   const privateKey = new Uint8Array(
     JSON.parse(localStorage.getItem("privateKey"))
   );
 
+  // Highlight matching text in search results
+  const highlightText = (text, query) => {
+    if (!query || !text) return text;
+    const idx = text.toLowerCase().indexOf(query.toLowerCase());
+    if (idx === -1) return text;
+    return (
+      <>
+        {text.slice(0, idx)}
+        <mark className="search-highlight">{text.slice(idx, idx + query.length)}</mark>
+        {text.slice(idx + query.length)}
+      </>
+    );
+  };
+
   const filteredConversations = conversations.filter((conversation) => {
+    if (showUnreadOnly && !unreadCounts[conversation._id]) return false;
+
     let chatName = "";
     let lastMessage = "";
     if (conversation.isGroupChat) {
@@ -175,6 +193,7 @@ function ChatSlideBar() {
   };
   const handleLogout = () => {
     localStorage.removeItem("userData");
+    localStorage.removeItem("privateKey");
     navigate("/");
     setShowUserDropdown(false);
   };
@@ -240,6 +259,26 @@ function ChatSlideBar() {
     socket.on("presence:update", handler);
     return () => socket.off("presence:update", handler);
   }, [socket]);
+
+  // Update browser tab title with total unread count
+  useEffect(() => {
+    const total = Object.values(unreadCounts).reduce((sum, n) => sum + n, 0);
+    document.title = total > 0 ? `(${total}) ChatApp` : "ChatApp";
+  }, [unreadCounts]);
+
+  // Session timeout warning — show banner if JWT expires within 5 days
+  useEffect(() => {
+    try {
+      const token = userData?.data?.token;
+      if (!token) return;
+      const payload = JSON.parse(atob(token.split(".")[1]));
+      const daysLeft = (payload.exp * 1000 - Date.now()) / (1000 * 60 * 60 * 24);
+      if (daysLeft <= 5) setSessionWarning(true);
+    } catch {
+      // malformed token — 401 interceptor will handle it
+    }
+  }, []);
+
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (
@@ -547,6 +586,18 @@ function ChatSlideBar() {
       className={"char_slide_bar-container" + (lightTheme ? "" : " dark")}
       style={isMobile ? (showChatInMobile ? { flex: 0 } : { flex: 1 }) : {}}
     >
+      {sessionWarning && (
+        <div className={"session-warning-banner" + (lightTheme ? "" : " dark")}>
+          <span>Your session expires soon. Please log out and log back in.</span>
+          <button
+            className="session-warning-dismiss"
+            onClick={() => setSessionWarning(false)}
+            aria-label="Dismiss session warning"
+          >
+            ✕
+          </button>
+        </div>
+      )}
       <div className={"slide_bar-header" + (lightTheme ? "" : " dark")}>
         <div className="user-profile-container">
           <button
@@ -732,7 +783,7 @@ function ChatSlideBar() {
         </div>
 
         <div className={"slide_bar-search" + (lightTheme ? "" : " dark")}>
-          <IconButton>
+          <IconButton aria-label="Search">
             <SearchIcon className={"icon" + (lightTheme ? "" : " dark")} />
           </IconButton>
           <input
@@ -741,6 +792,19 @@ function ChatSlideBar() {
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
           />
+          <Tooltip title={showUnreadOnly ? "Show all chats" : "Show unread only"}>
+            <button
+              className={
+                "unread-filter-btn" +
+                (showUnreadOnly ? " active" : "") +
+                (lightTheme ? "" : " dark")
+              }
+              onClick={() => setShowUnreadOnly((prev) => !prev)}
+              aria-label="Toggle unread filter"
+            >
+              {showUnreadOnly ? "Unread" : "All"}
+            </button>
+          </Tooltip>
         </div>
 
         <div className={"slide_bar-conversation" + (lightTheme ? "" : " dark")}>
@@ -836,8 +900,7 @@ function ChatSlideBar() {
                         "conversation_item-name" + (lightTheme ? "" : " dark")
                       }
                     >
-                      {chatName}
-                      {/* group online counter removed */}
+                      {highlightText(chatName, searchTerm)}
                     </p>
                     <p className="conversation_item-lastMsg">
                       No previous Messages, click here to start a new chat
@@ -916,8 +979,7 @@ function ChatSlideBar() {
                     "conversation_item-name" + (lightTheme ? "" : " dark")
                   }
                 >
-                  {chatName}
-                  {/* group online counter removed */}
+                  {highlightText(chatName, searchTerm)}
                 </p>
 
                 <p className="conversation_item-lastMsg">

@@ -1,6 +1,10 @@
 node_modules/
 .vscode
 .env
-
+CLAUDE.md
+FRONTEND_TODO.md
+HOW_TO_USE.md
+INTERVIEW_QUESTIONS.md
+RECENT_CHANGES.md
 # add it at prod
 # uploads/
